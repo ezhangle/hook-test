@@ -35,16 +35,18 @@ struct UNWIND_INFO {
     UCHAR CountOfCodes;
     UCHAR FrameRegister : 4;
     UCHAR FrameOffset   : 4;
-    UNWIND_CODE UnwindCode[3];
+    UNWIND_CODE UnwindCode[1];
 
-    union {
+	/*
+
+    OPTIONAL union {
         //
         // If (Flags & UNW_FLAG_EHANDLER)
         //
 		struct
 		{
-			OPTIONAL ULONG ExceptionHandler;
-		    OPTIONAL ULONG ExceptionData[1];
+			ULONG ExceptionHandler;
+			ULONG ExceptionData[1];
 		};
 
 		//
@@ -52,6 +54,8 @@ struct UNWIND_INFO {
         //
 		RUNTIME_FUNCTION ChainUnwindRuntimeFunction;
     };
+
+	*/
 };
 
 const char* getUnwindCodeString(UCHAR code)
@@ -120,7 +124,26 @@ void printUnwindInfo(uint64_t rip)
 
 	if (unwind->Flags & UNW_FLAG_EHANDLER)
 	{
-		printf("  UNWIND_");
+		ULONG ExceptionHandler = *(ULONG*)&unwind->UnwindCode[unwind->CountOfCodes];
+
+		printf(
+			"UNWIND_INFO.ExceptionHandler: 0x%08x (0x%016llx)\n",
+			ExceptionHandler,
+			base + ExceptionHandler
+			);
+	}
+	else if (unwind->Flags & UNW_FLAG_CHAININFO)
+	{
+		RUNTIME_FUNCTION* chainFunc = (RUNTIME_FUNCTION*)&unwind->UnwindCode[unwind->CountOfCodes];
+
+		printf(
+			"UNWIND_INFO.ChainUnwindRuntimeFunction.BeginAddress: 0x%08x (0x%016llx)\n"
+			"UNWIND_INFO.ChainUnwindRuntimeFunction.EndAddress:   0x%08x (0x%016llx)\n",
+			chainFunc->BeginAddress,
+			base + chainFunc->BeginAddress,
+			chainFunc->EndAddress,
+			base + chainFunc->EndAddress
+			);
 	}
 }
 
@@ -149,8 +172,6 @@ getUnwindAllocLargeInfo(uint32_t size)
 	ASSERT(size >= 136 && size <= 0x7fff8);
 	return size / 8;
 }
-
-//..............................................................................
 
 //..............................................................................
 

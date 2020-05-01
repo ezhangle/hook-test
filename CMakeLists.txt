@@ -8,13 +8,13 @@ include_directories (${AXL_INC_DIR})
 link_directories (${AXL_LIB_DIR})
 
 add_executable (
-	cpp_test 
+	hook_test 
 	main.cpp
 	thunk.asm
 	)
 
 target_link_libraries (
-	cpp_test
+	hook_test
 	axl_io
 	axl_core
 	dbghelp
