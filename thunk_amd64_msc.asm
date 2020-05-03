@@ -5,9 +5,9 @@ section .text
 	STACK_FRAME_SIZE  equ REG_ARG_SAVE_SIZE + REG_ARG_HOME_SIZE
 
 	extern targetFunc
-	extern hookRet
 	extern hookEnterFunc
 	extern hookLeaveFunc
+	extern hookRet
 
 	; standard prologue (leaves rpb 16-byte aligned)
 
@@ -96,4 +96,3 @@ section .text
 	ret
 
     ; SEH handler
-
