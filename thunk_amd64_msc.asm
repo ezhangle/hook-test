@@ -7,7 +7,10 @@ section .text
 	extern targetFunc
 	extern hookEnterFunc
 	extern hookLeaveFunc
+	extern hookExceptionFunc
 	extern hookRet
+
+thunk_entry:
 
 	; standard prologue (leaves rpb 16-byte aligned)
 
@@ -44,7 +47,6 @@ section .text
 	movdqa  xmm1, [rbp - 16 - 8 * 4 - 16 * 1]
 	movdqa  xmm2, [rbp - 16 - 8 * 4 - 16 * 2]
 	movdqa  xmm3, [rbp - 16 - 8 * 4 - 16 * 3]
-	movdqa  xmm3, [rbp - 16 - 8 * 4 - 16 * 3]
 
 	; undo prologue
 
@@ -61,11 +63,13 @@ section .text
 	mov     rax, targetFunc
 	jmp     rax
 
+hook_ret:
+
 	; rax now holds the original retval
 
 	; re-create our stack frame (compensating ret from targetFunc)
 
-	sub     rsp, 8                 ; <<< hookRet
+	sub     rsp, 8  ; <<< hook_ret
 	push    rbp
 	mov     rbp, rsp
 	sub     rsp, STACK_FRAME_SIZE
@@ -95,4 +99,26 @@ section .text
 	pop     rbp
 	ret
 
-    ; SEH handler
+seh_handler:
+
+	; save rdx (thunk.rbp = rdx - 16)
+
+	push    rdx  ; <<< seh_handler
+
+	; call the hook-exception function
+
+	mov     rax, hookExceptionFunc
+	call    rax
+
+	; rax now holds the original return pointer
+
+	pop     rdx
+
+	; restore the original return pointer
+
+	mov     [rdx - 16 + 8], rax
+
+	; return ExceptionContinueExecution
+
+	mov     rax, 0
+	ret

@@ -34,7 +34,6 @@ struct UNWIND_INFO {
     UCHAR CountOfCodes;
     UCHAR FrameRegister : 4;
     UCHAR FrameOffset   : 4;
-    UNWIND_CODE UnwindCode[1];
 
 	/*
 
@@ -84,7 +83,7 @@ void printUnwindInfo(uint64_t rip)
 	UNWIND_INFO* unwind = (UNWIND_INFO*) (base + func->UnwindInfoAddress);
 
 	printf(
-		"RIP: %zu\n"
+		"RIP: 0x%016llx\n"
 		"RUNTIME_FUNCTION.BeginAddress: 0x%08x (0x%016llx)\n"
 		"RUNTIME_FUNCTION.EndAddress:   0x%08x (0x%016llx)\n"
 		"UNWIND_INFO.Version:           0x%08x\n"
@@ -106,7 +105,9 @@ void printUnwindInfo(uint64_t rip)
 		unwind->CountOfCodes
 		);
 
-	for (UINT i = 0; i < unwind->CountOfCodes; i++)
+	const UNWIND_CODE* unwindCode = (UNWIND_CODE*)(unwind + 1);
+
+	for (UINT i = 0; i < unwind->CountOfCodes; i++, unwindCode++)
 	{
 		printf(
 			"  UNWIND_CODE[%d]:\n"
@@ -114,16 +115,18 @@ void printUnwindInfo(uint64_t rip)
 			"    UnwindCode:       0x%02x (%s)\n"
 			"    OperationInfo:    0x%02x\n",
 			i,
-			unwind->UnwindCode[i].OffsetInPrologue,
-			unwind->UnwindCode[i].UnwindCode,
-			getUnwindCodeString(unwind->UnwindCode[i].UnwindCode),
-			unwind->UnwindCode[i].OperationInfo
+			unwindCode->OffsetInPrologue,
+			unwindCode->UnwindCode,
+			getUnwindCodeString(unwindCode->UnwindCode),
+			unwindCode->OperationInfo
 			);
 	}
 
+	const void* extra = unwindCode;
+
 	if (unwind->Flags & UNW_FLAG_EHANDLER)
 	{
-		ULONG ExceptionHandler = *(ULONG*)&unwind->UnwindCode[unwind->CountOfCodes];
+		ULONG ExceptionHandler = *(ULONG*)extra;
 
 		printf(
 			"UNWIND_INFO.ExceptionHandler: 0x%08x (0x%016llx)\n",
@@ -133,7 +136,7 @@ void printUnwindInfo(uint64_t rip)
 	}
 	else if (unwind->Flags & UNW_FLAG_CHAININFO)
 	{
-		RUNTIME_FUNCTION* chainFunc = (RUNTIME_FUNCTION*)&unwind->UnwindCode[unwind->CountOfCodes];
+		RUNTIME_FUNCTION* chainFunc = (RUNTIME_FUNCTION*)extra;
 
 		printf(
 			"UNWIND_INFO.ChainUnwindRuntimeFunction.BeginAddress: 0x%08x (0x%016llx)\n"
@@ -187,7 +190,7 @@ union JmpThunkCode
 		StackFrameSize = 8 + 4 * 8 + 4 * 16, // padding + 4 gp regs + 4 xmm regs
 	};
 
-	uint8_t m_code[0xd7];
+	uint8_t m_code[0xea];
 
 	struct
 	{
@@ -203,28 +206,36 @@ union JmpThunkCode
 
 	struct
 	{
-		uint8_t m_offset3[0x7f];
+		uint8_t m_offset3[0x7a];
 		uint64_t m_hookRet;
 	};
 
 	struct
 	{
-		uint8_t m_offset4[0x8d];
+		uint8_t m_offset4[0x88];
 		uint64_t m_targetFunc2;
 	};
 
-	uint8_t m_hookRetOffset[0x97];
+	uint8_t m_hookRetOffset[0x92];
 
 	struct
 	{
-		uint8_t m_offset5[0xac];
+		uint8_t m_offset5[0xa7];
 		uint64_t m_targetFunc3;
 	};
 
 	struct
 	{
-		uint8_t m_offset6[0xbc];
+		uint8_t m_offset6[0xb7];
 		uint64_t m_hookLeaveFunc;
+	};
+
+	uint8_t m_hookSehHandlerOffset[0xd2];
+
+	struct
+	{
+		uint8_t m_offset7[0xd5];
+		uint64_t m_hookExceptionFunc;
 	};
 };
 
@@ -234,58 +245,65 @@ union JmpThunkCode
 
 JmpThunkCode g_jmpThunkCodeTemplate =
 {{
-	/* 00000000 */ 0x55,                                            // push    rbp
-	/* 00000001 */ 0x48, 0x89, 0xE5,                                // mov     rbp, rsp
-	/* 00000004 */ 0x48, 0x81, 0xEC, 0x88, 0x00, 0x00, 0x00,        // sub     rsp, STACK_FRAME_SIZE
-	/* 0000000B */ 0x48, 0x89, 0x4D, 0xF0,                          // mov     [rbp - 16 - 8 * 0], rcx
-	/* 0000000F */ 0x48, 0x89, 0x55, 0xE8,                          // mov     [rbp - 16 - 8 * 1], rdx
-	/* 00000013 */ 0x4C, 0x89, 0x45, 0xE0,                          // mov     [rbp - 16 - 8 * 2], r8
-	/* 00000017 */ 0x4C, 0x89, 0x4D, 0xD8,                          // mov     [rbp - 16 - 8 * 3], r9
-	/* 0000001B */ 0x66, 0x0F, 0x7F, 0x45, 0xD0,                    // movdqa  [rbp - 16 - 8 * 4 - 16 * 0], xmm0
-	/* 00000020 */ 0x66, 0x0F, 0x7F, 0x4D, 0xC0,                    // movdqa  [rbp - 16 - 8 * 4 - 16 * 1], xmm1
-	/* 00000025 */ 0x66, 0x0F, 0x7F, 0x55, 0xB0,                    // movdqa  [rbp - 16 - 8 * 4 - 16 * 2], xmm2
-	/* 0000002A */ 0x66, 0x0F, 0x7F, 0x5D, 0xA0,                    // movdqa  [rbp - 16 - 8 * 4 - 16 * 3], xmm3
-	/* 0000002F */ 0x48, 0xB9,                                      // mov     rcx, targetFunc
-	/* 00000031 */ 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-	/* 00000039 */ 0x48, 0x89, 0xEA,                                // mov     rdx, rbp
-	/* 0000003C */ 0x4C, 0x8B, 0x45, 0x08,                          // mov     r8, [rbp + 8]
-	/* 00000040 */ 0x48, 0xB8,                                      // mov     rax, hookEnterFunc
-	/* 00000042 */ 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-	/* 0000004A */ 0xFF, 0xD0,                                      // call    rax
-	/* 0000004C */ 0x48, 0x8B, 0x4D, 0xF0,                          // mov     rcx,  [rbp - 16 - 8 * 0]
-	/* 00000050 */ 0x48, 0x8B, 0x55, 0xE8,                          // mov     rdx,  [rbp - 16 - 8 * 1]
-	/* 00000054 */ 0x4C, 0x8B, 0x45, 0xE0,                          // mov     r8,   [rbp - 16 - 8 * 2]
-	/* 00000058 */ 0x4C, 0x8B, 0x4D, 0xD8,                          // mov     r9,   [rbp - 16 - 8 * 3]
-	/* 0000005C */ 0x66, 0x0F, 0x6F, 0x45, 0xD0,                    // movdqa  xmm0, [rbp - 16 - 8 * 4 - 16 * 0]
-	/* 00000061 */ 0x66, 0x0F, 0x6F, 0x4D, 0xC0,                    // movdqa  xmm1, [rbp - 16 - 8 * 4 - 16 * 1]
-	/* 00000066 */ 0x66, 0x0F, 0x6F, 0x55, 0xB0,                    // movdqa  xmm2, [rbp - 16 - 8 * 4 - 16 * 2]
-	/* 0000006B */ 0x66, 0x0F, 0x6F, 0x5D, 0xA0,                    // movdqa  xmm3, [rbp - 16 - 8 * 4 - 16 * 3]
-	/* 00000070 */ 0x66, 0x0F, 0x6F, 0x5D, 0xA0,                    // movdqa  xmm3, [rbp - 16 - 8 * 4 - 16 * 3]
-	/* 00000075 */ 0x48, 0x81, 0xC4, 0x88, 0x00, 0x00, 0x00,        // add     rsp, STACK_FRAME_SIZE
-	/* 0000007C */ 0x5D,                                            // pop     rbp
-	/* 0000007D */ 0x48, 0xB8,                                      // mov     rax, hookRet
-	/* 0000007F */ 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-	/* 00000087 */ 0x48, 0x89, 0x04, 0x24,                          // mov     [rsp], rax
-	/* 0000008B */ 0x48, 0xB8,                                      // mov     rax, targetFunc
-	/* 0000008D */ 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-	/* 00000095 */ 0xFF, 0xE0,                                      // jmp     rax
-	/* 00000097 */ 0x48, 0x83, 0xEC, 0x08,                          // sub     rsp, 8                 ; <<< hookThunkRet
-	/* 0000009B */ 0x55,                                            // push    rbp
-	/* 0000009C */ 0x48, 0x89, 0xE5,                                // mov     rbp, rsp
-	/* 0000009F */ 0x48, 0x81, 0xEC, 0x88, 0x00, 0x00, 0x00,        // sub     rsp, STACK_FRAME_SIZE
-	/* 000000A6 */ 0x48, 0x89, 0x45, 0xF8,                          // mov     [rbp - 8], rax
-	/* 000000AA */ 0x48, 0xB9,                                      // mov     rcx, targetFunc
-	/* 000000AC */ 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-	/* 000000B4 */ 0x48, 0x89, 0xEA,                                // mov     rdx, rbp
-	/* 000000B7 */ 0x49, 0x89, 0xC0,                                // mov     r8, rax
-	/* 000000BA */ 0x48, 0xB8,                                      // mov     rax, hookLeaveFunc
-	/* 000000BC */ 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-	/* 000000C4 */ 0xFF, 0xD0,                                      // call    rax
-	/* 000000C6 */ 0x48, 0x89, 0x45, 0x08,                          // mov     [rbp + 8], rax
-	/* 000000CA */ 0x48, 0x8B, 0x45, 0xF8,                          // mov     rax, [rbp - 8]
-	/* 000000CE */ 0x48, 0x81, 0xC4, 0x88, 0x00, 0x00, 0x00,        // add     rsp, STACK_FRAME_SIZE
-	/* 000000D5 */ 0x5D,                                            // pop     rbp
-	/* 000000D6 */ 0xC3,                                            // ret
+	0x55,                                            // 00000000  push    rbp
+	0x48, 0x89, 0xE5,                                // 00000001  mov     rbp, rsp
+	0x48, 0x81, 0xEC, 0x88, 0x00, 0x00, 0x00,        // 00000004  sub     rsp, STACK_FRAME_SIZE
+	0x48, 0x89, 0x4D, 0xF0,                          // 0000000B  mov     [rbp - 16 - 8 * 0], rcx
+	0x48, 0x89, 0x55, 0xE8,                          // 0000000F  mov     [rbp - 16 - 8 * 1], rdx
+	0x4C, 0x89, 0x45, 0xE0,                          // 00000013  mov     [rbp - 16 - 8 * 2], r8
+	0x4C, 0x89, 0x4D, 0xD8,                          // 00000017  mov     [rbp - 16 - 8 * 3], r9
+	0x66, 0x0F, 0x7F, 0x45, 0xD0,                    // 0000001B  movdqa  [rbp - 16 - 8 * 4 - 16 * 0], xmm0
+	0x66, 0x0F, 0x7F, 0x4D, 0xC0,                    // 00000020  movdqa  [rbp - 16 - 8 * 4 - 16 * 1], xmm1
+	0x66, 0x0F, 0x7F, 0x55, 0xB0,                    // 00000025  movdqa  [rbp - 16 - 8 * 4 - 16 * 2], xmm2
+	0x66, 0x0F, 0x7F, 0x5D, 0xA0,                    // 0000002A  movdqa  [rbp - 16 - 8 * 4 - 16 * 3], xmm3
+	0x48, 0xB9,                                      // 0000002F  mov     rcx, targetFunc
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,  // 00000031
+	0x48, 0x89, 0xEA,                                // 00000039  mov     rdx, rbp
+	0x4C, 0x8B, 0x45, 0x08,                          // 0000003C  mov     r8, [rbp + 8]
+	0x48, 0xB8,                                      // 00000040  mov     rax, hookEnterFunc
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,  // 00000042
+	0xFF, 0xD0,                                      // 0000004A  call    rax
+	0x48, 0x8B, 0x4D, 0xF0,                          // 0000004C  mov     rcx,  [rbp - 16 - 8 * 0]
+	0x48, 0x8B, 0x55, 0xE8,                          // 00000050  mov     rdx,  [rbp - 16 - 8 * 1]
+	0x4C, 0x8B, 0x45, 0xE0,                          // 00000054  mov     r8,   [rbp - 16 - 8 * 2]
+	0x4C, 0x8B, 0x4D, 0xD8,                          // 00000058  mov     r9,   [rbp - 16 - 8 * 3]
+	0x66, 0x0F, 0x6F, 0x45, 0xD0,                    // 0000005C  movdqa  xmm0, [rbp - 16 - 8 * 4 - 16 * 0]
+	0x66, 0x0F, 0x6F, 0x4D, 0xC0,                    // 00000061  movdqa  xmm1, [rbp - 16 - 8 * 4 - 16 * 1]
+	0x66, 0x0F, 0x6F, 0x55, 0xB0,                    // 00000066  movdqa  xmm2, [rbp - 16 - 8 * 4 - 16 * 2]
+	0x66, 0x0F, 0x6F, 0x5D, 0xA0,                    // 0000006B  movdqa  xmm3, [rbp - 16 - 8 * 4 - 16 * 3]
+	0x48, 0x81, 0xC4, 0x88, 0x00, 0x00, 0x00,        // 00000070  add     rsp, STACK_FRAME_SIZE
+	0x5D,                                            // 00000077  pop     rbp
+	0x48, 0xB8,                                      // 00000078  mov     rax, hookRet
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,  // 0000007A
+	0x48, 0x89, 0x04, 0x24,                          // 00000082  mov     [rsp], rax
+	0x48, 0xB8,                                      // 00000086  mov     rax, targetFunc
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,  // 00000088
+	0xFF, 0xE0,                                      // 00000090  jmp     rax
+	0x48, 0x83, 0xEC, 0x08,                          // 00000092  sub     rsp, 8  ; <<< hook_ret
+	0x55,                                            // 00000096  push    rbp
+	0x48, 0x89, 0xE5,                                // 00000097  mov     rbp, rsp
+	0x48, 0x81, 0xEC, 0x88, 0x00, 0x00, 0x00,        // 0000009A  sub     rsp, STACK_FRAME_SIZE
+	0x48, 0x89, 0x45, 0xF8,                          // 000000A1  mov     [rbp - 8], rax
+	0x48, 0xB9,                                      // 000000A5  mov     rcx, targetFunc
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,  // 000000A7
+	0x48, 0x89, 0xEA,                                // 000000AF  mov     rdx, rbp
+	0x49, 0x89, 0xC0,                                // 000000B2  mov     r8, rax
+	0x48, 0xB8,                                      // 000000B5  mov     rax, hookLeaveFunc
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,  // 000000B7
+	0xFF, 0xD0,                                      // 000000BF  call    rax
+	0x48, 0x89, 0x45, 0x08,                          // 000000C1  mov     [rbp + 8], rax
+	0x48, 0x8B, 0x45, 0xF8,                          // 000000C5  mov     rax, [rbp - 8]
+	0x48, 0x81, 0xC4, 0x88, 0x00, 0x00, 0x00,        // 000000C9  add     rsp, STACK_FRAME_SIZE
+	0x5D,                                            // 000000D0  pop     rbp
+	0xC3,                                            // 000000D1  ret
+	0x52,                                            // 000000D2  push    rdx  ; <<< seh_handler
+	0x48, 0xB8,                                      // 000000D3  mov     rax, hookExceptionFunc
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,  // 000000D5
+	0xFF, 0xD0,                                      // 000000DD  call    rax
+	0x5A,                                            // 000000DF  pop     rdx
+	0x48, 0x89, 0x42, 0xF8,                          // 000000E0  mov     [rdx - 16 + 8], rax
+	0xB8, 0x00, 0x00, 0x00, 0x00,                    // 000000E4  mov     rax, 0
+	0xC3,                                            // 000000E9  ret
 }};
 
 #pragma pack(pop)
@@ -296,6 +314,7 @@ struct JmpThunk
 #if (_AXL_OS_WIN)
 	RUNTIME_FUNCTION m_runtimeFunction;
 	UNWIND_INFO m_unwindInfo;
+	ULONG m_exceptionHandler;
 #endif
 };
 
@@ -360,69 +379,69 @@ union JmpThunkCode
 
 JmpThunkCode g_jmpThunkCodeTemplate =
 {{
-	 /* 00000000 */ 0x55,                                            // push    rbp
-	 /* 00000001 */ 0x48, 0x89, 0xE5,                                // mov     rbp, rsp
-	 /* 00000004 */ 0x48, 0x81, 0xEC, 0xB8, 0x00, 0x00, 0x00,        // sub     rsp, STACK_FRAME_SIZE
-	 /* 0000000B */ 0x48, 0x89, 0x7D, 0xF0,                          // mov     [rbp - 16 - 8 * 0], rdi
-	 /* 0000000F */ 0x48, 0x89, 0x75, 0xE8,                          // mov     [rbp - 16 - 8 * 1], rsi
-	 /* 00000013 */ 0x48, 0x89, 0x55, 0xE0,                          // mov     [rbp - 16 - 8 * 2], rdx
-	 /* 00000017 */ 0x48, 0x89, 0x4D, 0xD8,                          // mov     [rbp - 16 - 8 * 3], rcx
-	 /* 0000001B */ 0x4C, 0x89, 0x45, 0xD0,                          // mov     [rbp - 16 - 8 * 4], r8
-	 /* 0000001F */ 0x4C, 0x89, 0x4D, 0xC8,                          // mov     [rbp - 16 - 8 * 5], r9
-	 /* 00000023 */ 0x66, 0x0F, 0x7F, 0x45, 0xC0,                    // movdqa  [rbp - 16 - 8 * 6 - 16 * 0], xmm0
-	 /* 00000028 */ 0x66, 0x0F, 0x7F, 0x4D, 0xB0,                    // movdqa  [rbp - 16 - 8 * 6 - 16 * 1], xmm1
-	 /* 0000002D */ 0x66, 0x0F, 0x7F, 0x55, 0xA0,                    // movdqa  [rbp - 16 - 8 * 6 - 16 * 2], xmm2
-	 /* 00000032 */ 0x66, 0x0F, 0x7F, 0x5D, 0x90,                    // movdqa  [rbp - 16 - 8 * 6 - 16 * 3], xmm3
-	 /* 00000037 */ 0x66, 0x0F, 0x7F, 0x65, 0x80,                    // movdqa  [rbp - 16 - 8 * 6 - 16 * 4], xmm4
-	 /* 0000003C */ 0x66, 0x0F, 0x7F, 0xAD, 0x70, 0xFF, 0xFF, 0xFF,  // movdqa  [rbp - 16 - 8 * 6 - 16 * 5], xmm5
-	 /* 00000044 */ 0x66, 0x0F, 0x7F, 0xB5, 0x60, 0xFF, 0xFF, 0xFF,  // movdqa  [rbp - 16 - 8 * 6 - 16 * 6], xmm6
-	 /* 0000004C */ 0x66, 0x0F, 0x7F, 0xBD, 0x50, 0xFF, 0xFF, 0xFF,  // movdqa  [rbp - 16 - 8 * 6 - 16 * 7], xmm7
-	 /* 00000054 */ 0x48, 0xBF,                                      // mov     rdi, targetFunc
-	 /* 00000056 */ 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-	 /* 0000005E */ 0x48, 0x89, 0xEE,                                // mov     rsi, rbp
-	 /* 00000061 */ 0x48, 0x8B, 0x55, 0x08,                          // mov     rdx, [rbp + 8]
-	 /* 00000065 */ 0x48, 0xB8,                                      // mov     rax, hookEnterFunc
-	 /* 00000067 */ 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-	 /* 0000006F */ 0xFF, 0xD0,                                      // call    rax
-	 /* 00000071 */ 0x48, 0x8B, 0x7D, 0xF0,                          // mov     rdi,  [rbp - 16 - 8 * 0]
-	 /* 00000075 */ 0x48, 0x8B, 0x75, 0xE8,                          // mov     rsi,  [rbp - 16 - 8 * 1]
-	 /* 00000079 */ 0x48, 0x8B, 0x55, 0xE0,                          // mov     rdx,  [rbp - 16 - 8 * 2]
-	 /* 0000007D */ 0x48, 0x8B, 0x4D, 0xD8,                          // mov     rcx,  [rbp - 16 - 8 * 3]
-	 /* 00000081 */ 0x4C, 0x8B, 0x45, 0xD0,                          // mov     r8,   [rbp - 16 - 8 * 4]
-	 /* 00000085 */ 0x4C, 0x8B, 0x4D, 0xC8,                          // mov     r9,   [rbp - 16 - 8 * 5]
-	 /* 00000089 */ 0x66, 0x0F, 0x6F, 0x45, 0xC0,                    // movdqa  xmm0, [rbp - 16 - 8 * 6 - 16 * 0]
-	 /* 0000008E */ 0x66, 0x0F, 0x6F, 0x4D, 0xB0,                    // movdqa  xmm1, [rbp - 16 - 8 * 6 - 16 * 1]
-	 /* 00000093 */ 0x66, 0x0F, 0x6F, 0x55, 0xA0,                    // movdqa  xmm2, [rbp - 16 - 8 * 6 - 16 * 2]
-	 /* 00000098 */ 0x66, 0x0F, 0x6F, 0x5D, 0x90,                    // movdqa  xmm3, [rbp - 16 - 8 * 6 - 16 * 3]
-	 /* 0000009D */ 0x66, 0x0F, 0x6F, 0x65, 0x80,                    // movdqa  xmm4, [rbp - 16 - 8 * 6 - 16 * 4]
-	 /* 000000A2 */ 0x66, 0x0F, 0x6F, 0xAD, 0x70, 0xFF, 0xFF, 0xFF,  // movdqa  xmm5, [rbp - 16 - 8 * 6 - 16 * 5]
-	 /* 000000AA */ 0x66, 0x0F, 0x6F, 0xB5, 0x60, 0xFF, 0xFF, 0xFF,  // movdqa  xmm6, [rbp - 16 - 8 * 6 - 16 * 6]
-	 /* 000000B2 */ 0x66, 0x0F, 0x6F, 0xBD, 0x50, 0xFF, 0xFF, 0xFF,  // movdqa  xmm7, [rbp - 16 - 8 * 6 - 16 * 7]
-	 /* 000000BA */ 0x48, 0x81, 0xC4, 0xB8, 0x00, 0x00, 0x00,        // add     rsp, STACK_FRAME_SIZE
-	 /* 000000C1 */ 0x5D,                                            // pop     rbp
-	 /* 000000C2 */ 0x48, 0xB8,                                      // mov     rax, hookRet
-	 /* 000000C4 */ 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-	 /* 000000CC */ 0x48, 0x89, 0x04, 0x24,                          // mov     [rsp], rax
-	 /* 000000D0 */ 0x48, 0xB8,                                      // mov     rax, targetFunc
-	 /* 000000D2 */ 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-	 /* 000000DA */ 0xFF, 0xE0,                                      // jmp     rax
-	 /* 000000DC */ 0x48, 0x83, 0xEC, 0x08,                          // sub     rsp, 8                 ; <<< hookRet
-	 /* 000000E0 */ 0x55,                                            // push    rbp
-	 /* 000000E1 */ 0x48, 0x89, 0xE5,                                // mov     rbp, rsp
-	 /* 000000E4 */ 0x48, 0x81, 0xEC, 0xB8, 0x00, 0x00, 0x00,        // sub     rsp, STACK_FRAME_SIZE
-	 /* 000000EB */ 0x48, 0x89, 0x45, 0xF8,                          // mov     [rbp - 8], rax
-	 /* 000000EF */ 0x48, 0xBF,                                      // mov     rdi, targetFunc
-	 /* 000000F1 */ 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-	 /* 000000F9 */ 0x48, 0x89, 0xEE,                                // mov     rsi, rbp
-	 /* 000000FC */ 0x48, 0x89, 0xC2,                                // mov     rdx, rax
-	 /* 000000FF */ 0x48, 0xB8,                                      // mov     rax, hookLeaveFunc
-	 /* 00000101 */ 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-	 /* 00000109 */ 0xFF, 0xD0,                                      // call    rax
-	 /* 0000010B */ 0x48, 0x89, 0x45, 0x08,                          // mov     [rbp + 8], rax
-	 /* 0000010F */ 0x48, 0x8B, 0x45, 0xF8,                          // mov     rax, [rbp - 8]
-	 /* 00000113 */ 0x48, 0x81, 0xC4, 0xB8, 0x00, 0x00, 0x00,        // add     rsp, STACK_FRAME_SIZE
-	 /* 0000011A */ 0x5D,                                            // pop     rbp
-	 /* 0000011B */ 0xC3,                                            // ret
+	0x55,                                            // 00000000  push    rbp
+	0x48, 0x89, 0xE5,                                // 00000001  mov     rbp, rsp
+	0x48, 0x81, 0xEC, 0xB8, 0x00, 0x00, 0x00,        // 00000004  sub     rsp, STACK_FRAME_SIZE
+	0x48, 0x89, 0x7D, 0xF0,                          // 0000000B  mov     [rbp - 16 - 8 * 0], rdi
+	0x48, 0x89, 0x75, 0xE8,                          // 0000000F  mov     [rbp - 16 - 8 * 1], rsi
+	0x48, 0x89, 0x55, 0xE0,                          // 00000013  mov     [rbp - 16 - 8 * 2], rdx
+	0x48, 0x89, 0x4D, 0xD8,                          // 00000017  mov     [rbp - 16 - 8 * 3], rcx
+	0x4C, 0x89, 0x45, 0xD0,                          // 0000001B  mov     [rbp - 16 - 8 * 4], r8
+	0x4C, 0x89, 0x4D, 0xC8,                          // 0000001F  mov     [rbp - 16 - 8 * 5], r9
+	0x66, 0x0F, 0x7F, 0x45, 0xC0,                    // 00000023  movdqa  [rbp - 16 - 8 * 6 - 16 * 0], xmm0
+	0x66, 0x0F, 0x7F, 0x4D, 0xB0,                    // 00000028  movdqa  [rbp - 16 - 8 * 6 - 16 * 1], xmm1
+	0x66, 0x0F, 0x7F, 0x55, 0xA0,                    // 0000002D  movdqa  [rbp - 16 - 8 * 6 - 16 * 2], xmm2
+	0x66, 0x0F, 0x7F, 0x5D, 0x90,                    // 00000032  movdqa  [rbp - 16 - 8 * 6 - 16 * 3], xmm3
+	0x66, 0x0F, 0x7F, 0x65, 0x80,                    // 00000037  movdqa  [rbp - 16 - 8 * 6 - 16 * 4], xmm4
+	0x66, 0x0F, 0x7F, 0xAD, 0x70, 0xFF, 0xFF, 0xFF,  // 0000003C  movdqa  [rbp - 16 - 8 * 6 - 16 * 5], xmm5
+	0x66, 0x0F, 0x7F, 0xB5, 0x60, 0xFF, 0xFF, 0xFF,  // 00000044  movdqa  [rbp - 16 - 8 * 6 - 16 * 6], xmm6
+	0x66, 0x0F, 0x7F, 0xBD, 0x50, 0xFF, 0xFF, 0xFF,  // 0000004C  movdqa  [rbp - 16 - 8 * 6 - 16 * 7], xmm7
+	0x48, 0xBF,                                      // 00000054  mov     rdi, targetFunc
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,  // 00000056
+	0x48, 0x89, 0xEE,                                // 0000005E  mov     rsi, rbp
+	0x48, 0x8B, 0x55, 0x08,                          // 00000061  mov     rdx, [rbp + 8]
+	0x48, 0xB8,                                      // 00000065  mov     rax, hookEnterFunc
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,  // 00000067
+	0xFF, 0xD0,                                      // 0000006F  call    rax
+	0x48, 0x8B, 0x7D, 0xF0,                          // 00000071  mov     rdi,  [rbp - 16 - 8 * 0]
+	0x48, 0x8B, 0x75, 0xE8,                          // 00000075  mov     rsi,  [rbp - 16 - 8 * 1]
+	0x48, 0x8B, 0x55, 0xE0,                          // 00000079  mov     rdx,  [rbp - 16 - 8 * 2]
+	0x48, 0x8B, 0x4D, 0xD8,                          // 0000007D  mov     rcx,  [rbp - 16 - 8 * 3]
+	0x4C, 0x8B, 0x45, 0xD0,                          // 00000081  mov     r8,   [rbp - 16 - 8 * 4]
+	0x4C, 0x8B, 0x4D, 0xC8,                          // 00000085  mov     r9,   [rbp - 16 - 8 * 5]
+	0x66, 0x0F, 0x6F, 0x45, 0xC0,                    // 00000089  movdqa  xmm0, [rbp - 16 - 8 * 6 - 16 * 0]
+	0x66, 0x0F, 0x6F, 0x4D, 0xB0,                    // 0000008E  movdqa  xmm1, [rbp - 16 - 8 * 6 - 16 * 1]
+	0x66, 0x0F, 0x6F, 0x55, 0xA0,                    // 00000093  movdqa  xmm2, [rbp - 16 - 8 * 6 - 16 * 2]
+	0x66, 0x0F, 0x6F, 0x5D, 0x90,                    // 00000098  movdqa  xmm3, [rbp - 16 - 8 * 6 - 16 * 3]
+	0x66, 0x0F, 0x6F, 0x65, 0x80,                    // 0000009D  movdqa  xmm4, [rbp - 16 - 8 * 6 - 16 * 4]
+	0x66, 0x0F, 0x6F, 0xAD, 0x70, 0xFF, 0xFF, 0xFF,  // 000000A2  movdqa  xmm5, [rbp - 16 - 8 * 6 - 16 * 5]
+	0x66, 0x0F, 0x6F, 0xB5, 0x60, 0xFF, 0xFF, 0xFF,  // 000000AA  movdqa  xmm6, [rbp - 16 - 8 * 6 - 16 * 6]
+	0x66, 0x0F, 0x6F, 0xBD, 0x50, 0xFF, 0xFF, 0xFF,  // 000000B2  movdqa  xmm7, [rbp - 16 - 8 * 6 - 16 * 7]
+	0x48, 0x81, 0xC4, 0xB8, 0x00, 0x00, 0x00,        // 000000BA  add     rsp, STACK_FRAME_SIZE
+	0x5D,                                            // 000000C1  pop     rbp
+	0x48, 0xB8,                                      // 000000C2  mov     rax, hookRet
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,  // 000000C4
+	0x48, 0x89, 0x04, 0x24,                          // 000000CC  mov     [rsp], rax
+	0x48, 0xB8,                                      // 000000D0  mov     rax, targetFunc
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,  // 000000D2
+	0xFF, 0xE0,                                      // 000000DA  jmp     rax
+	0x48, 0x83, 0xEC, 0x08,                          // 000000DC  sub     rsp, 8                 ; <<< hookRet
+	0x55,                                            // 000000E0  push    rbp
+	0x48, 0x89, 0xE5,                                // 000000E1  mov     rbp, rsp
+	0x48, 0x81, 0xEC, 0xB8, 0x00, 0x00, 0x00,        // 000000E4  sub     rsp, STACK_FRAME_SIZE
+	0x48, 0x89, 0x45, 0xF8,                          // 000000EB  mov     [rbp - 8], rax
+	0x48, 0xBF,                                      // 000000EF  mov     rdi, targetFunc
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,  // 000000F1
+	0x48, 0x89, 0xEE,                                // 000000F9  mov     rsi, rbp
+	0x48, 0x89, 0xC2,                                // 000000FC  mov     rdx, rax
+	0x48, 0xB8,                                      // 000000FF  mov     rax, hookLeaveFunc
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,  // 00000101
+	0xFF, 0xD0,                                      // 00000109  call    rax
+	0x48, 0x89, 0x45, 0x08,                          // 0000010B  mov     [rbp + 8], rax
+	0x48, 0x8B, 0x45, 0xF8,                          // 0000010F  mov     rax, [rbp - 8]
+	0x48, 0x81, 0xC4, 0xB8, 0x00, 0x00, 0x00,        // 00000113  add     rsp, STACK_FRAME_SIZE
+	0x5D,                                            // 0000011A  pop     rbp
+	0xC3,                                            // 0000011B  ret
 }};
 
 #pragma pack(pop)
@@ -436,9 +455,13 @@ struct JmpThunk
 
 // . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .
 
-void* g_originalRet;
+int* g_p = NULL;
+int g_x;
 
-void hookEnter(
+thread_local void* g_originalRet;
+
+void
+hookEnter(
 	void* func,
 	void* rbp,
 	void* originalRet
@@ -448,15 +471,35 @@ void hookEnter(
 	g_originalRet = originalRet;
 }
 
-void* hookLeave(
-	void* id,
+void*
+hookLeave(
+	void* func,
 	void* rbp,
 	void* rax
 	)
 {
-	printf("hookLeave(func: %p, rbp: %p, rax: %lld / 0x%p)\n", id, rbp, (uint64_t)rax, rax);
+	printf("hookLeave(func: %p, rbp: %p, rax: %lld / 0x%p)\n", func, rbp, (uint64_t)rax, rax);
 	return g_originalRet;
 }
+
+#if (_AXL_OS_WIN)
+
+void*
+hookException(
+	EXCEPTION_RECORD* exceptionRecord,
+	void* establisherFrame,
+	CONTEXT* contextRecord,
+	DISPATCHER_CONTEXT* dispatcherContext
+	)
+{
+	void* rbp = (void**)establisherFrame - 2;
+	printf("hookException: rbp: %p\n", rbp);
+	contextRecord->Rax = (uint64_t)&g_x;
+	g_p = &g_x;
+	return g_originalRet;
+}
+
+#endif
 
 // . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .
 
@@ -490,6 +533,7 @@ createJmpThunk(void* targetFunc)
 	thunk->m_code.m_hookRet = (uint64_t)((char*)thunk + sizeof(JmpThunkCode::m_hookRetOffset));
 	thunk->m_code.m_hookEnterFunc = (uint64_t)hookEnter;
 	thunk->m_code.m_hookLeaveFunc = (uint64_t)hookLeave;
+	thunk->m_code.m_hookExceptionFunc = (uint64_t)hookException;
 
 #if (_AXL_OS_WIN)
 	thunk->m_runtimeFunction.BeginAddress = 0;
@@ -497,18 +541,15 @@ createJmpThunk(void* targetFunc)
 	thunk->m_runtimeFunction.UnwindInfoAddress = (DWORD)((char*)&thunk->m_unwindInfo - (char*)thunk);
 
 	thunk->m_unwindInfo.Version = 1;
-	thunk->m_unwindInfo.Flags = 0;
-	thunk->m_unwindInfo.SizeOfProlog = 0x4;
+	thunk->m_unwindInfo.Flags = UNW_FLAG_EHANDLER;
+	thunk->m_unwindInfo.SizeOfProlog = 0;
 	thunk->m_unwindInfo.FrameRegister = 0;
 	thunk->m_unwindInfo.FrameOffset = 0;
-	thunk->m_unwindInfo.CountOfCodes = 1;
+	thunk->m_unwindInfo.CountOfCodes = 0;
 
-	thunk->m_unwindInfo.UnwindCode[0].UnwindCode = UWOP_ALLOC_SMALL;
-	thunk->m_unwindInfo.UnwindCode[0].OffsetInPrologue = 0x4;
-	thunk->m_unwindInfo.UnwindCode[0].OperationInfo = getUnwindAllocSmallOpInfo(JmpThunkCode::StackFrameSize);
+	thunk->m_exceptionHandler = sizeof(JmpThunkCode::m_hookSehHandlerOffset);
 
 	uint64_t base = (uint64_t)thunk;
-
 	RtlAddFunctionTable(&thunk->m_runtimeFunction, 1, base);
 #endif
 
@@ -526,8 +567,7 @@ int bar(int a, double b, int c, double d, int e, double f, int g, double h, int 
 	printf("bar(%d, %f, %d, %f, %d, %f, %d, %f, %d, %f)\n", a, b, c, d, e, f, g, h, i, j);
 
 #if (_AXL_OS_WIN)
-	int* p = NULL;
-	*p = 10;
+	*g_p = 10;
 #endif
 
 	return 456;
@@ -553,11 +593,20 @@ int test(int a, double b, int c, double d, int e, double f, int g, double h, int
 	printUnwindInfo(g_context.Rip);
 #endif
 
-	int result;
+	int result = -1;
 
 	JmpThunk* jmpThunk = createJmpThunk((void*)foo);
-	result = ((FooFunc*)&jmpThunk->m_code)(a, b, c, d, e, f, g, h, i, j);
-	printf("jmpThunk -> %d\n", result);
+
+	__try
+	{
+		result = ((FooFunc*)&jmpThunk->m_code)(a, b, c, d, e, f, g, h, i, j);
+		printf("jmpThunk -> %d\n", result);
+	}
+	__except(1)
+	{
+		printf("exception caught in test()\n");
+	}
+
 	return result;
 }
 
@@ -570,10 +619,11 @@ int main()
 
 	__try
 	{
+#if (_PRINT_UNWIND_INFO)
 		g_context.ContextFlags = CONTEXT_CONTROL;
 		RtlCaptureContext(&g_context);
 		printUnwindInfo(g_context.Rip);
-
+#endif
 		test(10, 20, 30, 40, 50, 60, 70, 80, 90, 100);
 	}
 	__except(1)

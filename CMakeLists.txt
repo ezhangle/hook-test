@@ -12,8 +12,9 @@ add_executable (
 	main.cpp
 	pch.cpp
 	pch.h
-	thunk_win_amd64.asm
-	thunk_systemv_amd64.asm
+	thunk_x86.asm
+	thunk_amd64_msc.asm
+	thunk_amd64_gcc.asm
 	)
 
 axl_set_pch(

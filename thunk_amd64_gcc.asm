@@ -7,6 +7,8 @@ section .text
 	extern hookLeaveFunc
 	extern hookRet
 
+thunk_entry:
+
 	; standard prologue (leaves rpb 16-byte aligned)
 
 	push    rbp
@@ -70,11 +72,13 @@ section .text
 	mov     rax, targetFunc
 	jmp     rax
 
+hook_ret:
+
 	; rax now holds the original retval
 
 	; re-create our stack frame (compensating ret from targetFunc)
 
-	sub     rsp, 8                 ; <<< hookRet
+	sub     rsp, 8  ; <<< hook_ret
 	push    rbp
 	mov     rbp, rsp
 	sub     rsp, STACK_FRAME_SIZE

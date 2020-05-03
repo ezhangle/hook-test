@@ -7,6 +7,8 @@ section .text
 	extern hookLeaveFunc
 	extern hookRet
 
+thunk_entry:
+
 	; standard prologue
 
 	push    ebp
@@ -36,11 +38,13 @@ section .text
 	mov     eax, targetFunc
 	jmp     eax
 
+hook_ret:
+
 	; eax now holds the original retval
 
 	; re-create our stack frame (compensating ret from targetFunc)
 
-	sub     esp, 4                 ; <<< hookRet
+	sub     esp, 4  ; <<< hook_ret
 	push    ebp
 	mov     ebp, esp
 	sub     esp, STACK_FRAME_SIZE
